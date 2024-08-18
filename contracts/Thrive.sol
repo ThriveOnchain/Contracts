@@ -42,6 +42,9 @@ contract Thrive is ReentrancyGuard {
 
 	uint256 private nextTargetSavingsId = 1;
 
+	//user rewards on savings
+	mapping(address => uint256) public userUSDRewards;
+
 	// EVENTS
 	//SaveLock events
 	event SaveLockCreated(
@@ -67,7 +70,7 @@ contract Thrive is ReentrancyGuard {
 		address indexed user,
 		string purpose,
 		uint256 targetAmount,
-		uint256 startTime,
+		uint256 indexed startTime,
 		uint256 endTime,
 		uint256 indexed savingsId
 	);
@@ -83,6 +86,9 @@ contract Thrive is ReentrancyGuard {
 		uint256 totalAmount,
 		uint256 rewardAmount
 	);
+
+	//rewards events
+	event SafeLockRewardsClaimed(address indexed user, uint256 amount);
 
 	//Modifiers
 
@@ -198,7 +204,6 @@ contract Thrive is ReentrancyGuard {
 
 	function completeTargetSavings(uint256 _savingsId) external nonReentrant {
 		ThriveUtils.TargetSavings storage savings = targetSavings[_savingsId];
-
 		require(
 			savings.owner == msg.sender,
 			"only owner can complete target saivngs"
@@ -230,7 +235,7 @@ contract Thrive is ReentrancyGuard {
 		userTargetSavings[savings.owner].remove(_savingsId);
 		allTargetSavings.remove(_savingsId);
 
-		delete targetSavings[_savingsId];
+		// delete targetSavings[_savingsId];
 
 		emit TargetSavingsCompleted(
 			_savingsId,
@@ -262,12 +267,16 @@ contract Thrive is ReentrancyGuard {
 
 		// Create new SaveLock
 		saveLocks[newLockId] = ThriveUtils.SaveLock({
+			id: newLockId,
 			owner: msg.sender,
 			amount: _amount,
+			withdrawnAmount: 0,
 			title: _title,
 			lockDuration: lockDuration,
 			startTime: block.timestamp,
-			lockToken: usdc
+			lockToken: usdc,
+			withdrawn: false,
+			accumulatedRewards: 0
 		});
 
 		// Add to user's active save locks and all active save locks
@@ -316,11 +325,14 @@ contract Thrive is ReentrancyGuard {
 		} else {
 			uint256 daysLocked = lock.lockDuration.div(1 days);
 			rewardAmount = calculateSaveLockReward(lock.amount, daysLocked);
-			amountToTransfer = lock.amount.add(rewardAmount);
+			userUSDRewards[msg.sender] = userUSDRewards[msg.sender].add(
+				rewardAmount
+			);
+			lock.accumulatedRewards = rewardAmount;
 		}
 
-		// Transfer funds to user
-		IERC20(usdc).safeTransfer(msg.sender, amountToTransfer);
+		lock.withdrawnAmount = amountToTransfer;
+		lock.withdrawn = true;
 
 		// Remove save lock from active sets
 		userActiveSaveLocks[msg.sender].remove(_lockId);
@@ -330,8 +342,8 @@ contract Thrive is ReentrancyGuard {
 		userInActiveSaveLocks[msg.sender].add(_lockId);
 		allInActiveSaveLocks.add(_lockId);
 
-		// // Clear the save lock data
-		// delete saveLocks[_lockId];
+		// Transfer funds to user
+		IERC20(usdc).safeTransfer(msg.sender, amountToTransfer);
 
 		emit FundsWithdrawn(
 			msg.sender,
@@ -342,6 +354,17 @@ contract Thrive is ReentrancyGuard {
 			block.timestamp,
 			_lockId
 		);
+	}
+
+	function claimSafeLockRewards() external nonReentrant {
+		uint256 rewardsAmount = userUSDRewards[msg.sender];
+		require(rewardsAmount > 0, "No rewards to claim");
+
+		userUSDRewards[msg.sender] = 0;
+
+		IERC20(usdc).safeTransfer(msg.sender, rewardsAmount);
+
+		emit SafeLockRewardsClaimed(msg.sender, rewardsAmount);
 	}
 
 	/**
@@ -394,6 +417,12 @@ contract Thrive is ReentrancyGuard {
 		uint256 _lockId
 	) external view returns (ThriveUtils.SaveLock memory) {
 		return saveLocks[_lockId];
+	}
+
+	function getUnclaimedSafeLockRewards(
+		address _user
+	) external view returns (uint256) {
+		return userUSDRewards[_user];
 	}
 
 	//target savings

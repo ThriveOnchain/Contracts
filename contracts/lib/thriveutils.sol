@@ -19,12 +19,16 @@ library ThriveUtils {
 	}
 
 	struct SaveLock {
+		uint256 id;
 		address owner;
 		uint256 amount;
+		uint256 withdrawnAmount;
 		string title;
 		uint256 lockDuration;
 		uint256 startTime;
 		address lockToken;
+		bool withdrawn;
+		uint256 accumulatedRewards;
 	}
 
 	struct TargetSavings {
