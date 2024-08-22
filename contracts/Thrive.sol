@@ -7,9 +7,12 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
 import "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 import "./lib/thriveutils.sol";
+import "./ThrivePiggy.sol";
 
-contract Thrive is ReentrancyGuard {
+contract Thrive is ReentrancyGuard, Ownable  {
+	ThrivePiggy public thrivePiggy;
 	using SafeERC20 for IERC20;
 	using SafeMath for uint256;
 	using EnumerableSet for EnumerableSet.UintSet;
@@ -20,6 +23,7 @@ contract Thrive is ReentrancyGuard {
 	uint256 public constant DAYS_PER_YEAR = 365;
 	uint256 public constant AAVE_APY = 200; // 2% APY, represented as 200 basis points
 	uint256 public constant SCALE = 1e18; // Used for precision in calculations
+	bool isRewardsActive = true;
 
 	//SAVELOCK ITEMS STATES ........................................
 	// Mapping to store SaveLock structs
@@ -98,9 +102,10 @@ contract Thrive is ReentrancyGuard {
 	}
 
 	//CONSTRUCTOR /////
-	constructor(address _usdc) {
+	constructor(address _usdc, address _aaveProviderAddress) {
 		require(_usdc != address(0), "Invalid USDC address");
 		usdc = _usdc;
+		 thrivePiggy = new ThrivePiggy(_aaveProviderAddress, _usdc, address(this));
 	}
 
 	//TARGET SAVE DOMAIN ~~~~
@@ -164,7 +169,8 @@ contract Thrive is ReentrancyGuard {
 		require(!savings.completed, "Target savings already completed");
 		require(block.timestamp < savings.endTime, "Savings period has ended");
 
-		IERC20(usdc).safeTransferFrom(msg.sender, address(this), _amount);
+		IERC20(usdc).safeTransferFrom(msg.sender, address(thrivePiggy), _amount);
+		thrivePiggy.depositToAave(_amount);
 
 		uint256 newRewards = 0;
 		if (savings.lastDepositTime != 0) {
@@ -224,6 +230,8 @@ contract Thrive is ReentrancyGuard {
 		// subtract 30% protocol fees on the rewards
 		uint256 protocolRewardShare = rewardsToTransfer.mul(3000).div(10000);
 		rewardsToTransfer = rewardsToTransfer.sub(protocolRewardShare);
+		// Withdraw from Aave
+    	thrivePiggy.withdrawFromAave(amountToTransfer.add(rewardsToTransfer), address(this));
 
 		IERC20(usdc).safeTransfer(
 			savings.owner,
@@ -263,7 +271,13 @@ contract Thrive is ReentrancyGuard {
 		uint256 newLockId = nextSaveLockId++;
 
 		// Transfer USDC from user to contract
-		IERC20(usdc).safeTransferFrom(msg.sender, address(this), _amount);
+		IERC20(usdc).safeTransferFrom(msg.sender, address(thrivePiggy), _amount);
+
+		thrivePiggy.depositToAave(_amount);
+
+		// Save to Aave
+		IERC20(usdc).approve(address(thrivePiggy), _amount);
+    	thrivePiggy.depositToAave(_amount);
 
 		// Create new SaveLock
 		saveLocks[newLockId] = ThriveUtils.SaveLock({
@@ -299,7 +313,7 @@ contract Thrive is ReentrancyGuard {
 	 * @param _lockId The ID of the save lock to withdraw from
 	 */
 
-	function withdrawLockedFunds(uint256 _lockId) external nonReentrant {
+	function withdrawAndCloseSafeLock(uint256 _lockId) external nonReentrant {
 		require(
 			userActiveSaveLocks[msg.sender].contains(_lockId),
 			"SaveLock not found or not owned by user"
@@ -330,10 +344,16 @@ contract Thrive is ReentrancyGuard {
 			);
 			lock.accumulatedRewards = rewardAmount;
 		}
+		
+
+		// Withdraw from Aave
+    	thrivePiggy.withdrawFromAave(amountToTransfer, address(this));
 
 		lock.withdrawnAmount = amountToTransfer;
 		lock.withdrawn = true;
 
+		 // Withdraw from Aave
+    	thrivePiggy.withdrawFromAave(amountToTransfer, address(this));
 		// Remove save lock from active sets
 		userActiveSaveLocks[msg.sender].remove(_lockId);
 		allActiveSaveLocks.remove(_lockId);
@@ -441,4 +461,18 @@ contract Thrive is ReentrancyGuard {
 	) external view returns (ThriveUtils.TargetSavings memory) {
 		return targetSavings[_savingsId];
 	}
+
+	//aadmin
+	/**
+   * @notice Rescue and transfer tokens locked in this contract
+   * @param token The address of the token
+   * @param to The address of the recipient
+   * @param amount The amount of token to transfer
+   */
+  function recueTokens(address token, address to, uint256 amount) external {
+    IERC20(token).safeTransfer(to, amount);
+  }
+   function recueThriveTokens(address token, address to, uint256 amount) external {
+    thrivePiggy.rescueTokens(token,to, amount);
+  }
 }
